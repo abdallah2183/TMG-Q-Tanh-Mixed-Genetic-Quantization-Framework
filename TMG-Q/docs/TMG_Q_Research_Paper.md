@@ -1,6 +1,6 @@
 # TMG-Q: Tanh-Nonlinear Mixed-Precision Genetic Quantization for High-Quality LLM Compression
 
-**Author:** Abdal  
+**Author:** Abdullah Salem Saleh Al-Faqeer  
 **Date:** March 2026  
 **Version:** 2.1  
 
@@ -840,3 +840,4 @@ Unpacking recovers signed INT4 values in [-8, 7] by subtracting 8.
 ---
 
 Copyright 2026 Abdal. All rights reserved.
+
