@@ -18,6 +18,8 @@ import torch.nn as nn
 import numpy as np
 import pickle
 
+from tmgq_packer import QuantizedLinear
+
 # Ensure nanoGPT is accessible
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
@@ -135,27 +137,40 @@ def error_diffusion(w_orig, w_q, h_diag, n_waves=3, gs=128):
         wc = wc + res
     return wc
 
+def rgetattr(obj, attr, *args):
+    def _getattr(obj, attr):
+        return getattr(obj, attr, *args)
+    import functools
+    return functools.reduce(_getattr, [obj] + attr.split('.'))
+
 def apply_omegaquant(model, bits, h_diag_all, device):
-    """Apply TMG-Q Ultra inplace."""
+    """Apply TMG-Q Ultra inplace and pack into physical INT32 limits."""
     total_layers = sum(1 for m in model.modules() if isinstance(m, nn.Linear))
     current_layer = 1
     
-    for n, m in model.named_modules():
-        if isinstance(m, nn.Linear):
-            w = m.weight.data
-            print(f"  [{current_layer}/{total_layers}] Quantizing {n} ({w.shape[0]}x{w.shape[1]})", end='\r')
-            orig = w.clone()
-            hd = h_diag_all.get(n)
+    linear_names = [n for n, m in model.named_modules() if isinstance(m, nn.Linear)]
+    
+    for n in linear_names:
+        m = rgetattr(model, n)
+        w = m.weight.data
+        print(f"  [{current_layer}/{total_layers}] Packing {n} ({w.shape[0]}x{w.shape[1]})", end='\r')
+        orig = w.clone()
+        hd = h_diag_all.get(n)
+        
+        wq = sensitivity_quantize(w, bits, hd)
+        wq = error_diffusion(orig, wq, hd, n_waves=3)
+        
+        # TMG-Q HARDWARE PACKING: Destroy FP16, inject INT32 QuantizedLinear
+        qlayer = QuantizedLinear(m.in_features, m.out_features, bias=m.bias is not None, gs=128)
+        qlayer.pack_from_float(wq, m.bias.data if m.bias is not None else None, n_bits=bits)
+        
+        pre, _, post = n.rpartition('.')
+        parent = rgetattr(model, pre) if pre else model
+        setattr(parent, post, qlayer)
+        
+        current_layer += 1
             
-            wq = sensitivity_quantize(w, bits, hd)
-            wq = error_diffusion(orig, wq, hd, n_waves=3)
-            # SVD explicitly removed: Strict INT integer-bounds maintained
-            
-            # Save back as float16 to save space on disk natively 
-            m.weight.data = wq.to(torch.float16)
-            current_layer += 1
-            
-    print(f"\n  Done Quantizing {total_layers} layers!")
+    print(f"\n  Done Quantizing & Packing {total_layers} layers!")
     return model
 
 
@@ -271,9 +286,6 @@ def main():
     torch.save(checkpoint, out_path)
     
     print(f"   -> Success! Saved to {out_path}")
-    print(f"\nNote: The file size on disk may still reflect FP16 because PyTorch")
-    print(f"does not natively pack {args.bits}-bit integers in checkpoints. However,")
-    print(f"the internal information entropy is strictly {args.bits}-bit.")
     print(f"============================================================")
 
 

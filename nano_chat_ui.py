@@ -1,7 +1,15 @@
 import sys
 from pathlib import Path
 import torch
+import torch.nn as nn
 import gradio as gr
+from tmgq_packer import QuantizedLinear
+
+def rgetattr(obj, attr, *args):
+    def _getattr(obj, attr):
+        return getattr(obj, attr, *args)
+    import functools
+    return functools.reduce(_getattr, [obj] + attr.split('.'))
 
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
@@ -32,9 +40,24 @@ try:
     model = GPT(gptconf)
     state_dict = checkpoint["model"]
     unwanted_prefix = "_orig_mod."
+    
+    # Clean unwanted prefix BEFORE structure matching
     for key in list(state_dict.keys()):
         if key.startswith(unwanted_prefix):
             state_dict[key[len(unwanted_prefix):]] = state_dict.pop(key)
+            
+    # Detect TMG-Q Packed INT32 layers
+    quantized_keys = set([k.rpartition('.')[0] for k in state_dict.keys() if 'qweight' in k])
+    if quantized_keys:
+        print("Detected Physical Packed INT32 Tensors! Dynamically reconstructing hardware layers...")
+        for n in quantized_keys:
+            m = rgetattr(model, n, None)
+            if m is not None and isinstance(m, nn.Linear):
+                qlayer = QuantizedLinear(m.in_features, m.out_features, bias=m.bias is not None, gs=128)
+                pre, _, post = n.rpartition('.')
+                parent = rgetattr(model, pre) if pre else model
+                setattr(parent, post, qlayer)
+
     model.load_state_dict(state_dict)
     model.eval()
     model.to(device)
