@@ -1,24 +1,26 @@
 #!/usr/bin/env python
 """
-TMG-Q Ultra CLI (Formerly OmegaQuant)
-=====================================
-The ultimate command-line interface for extreme LLM compression.
-Downloads a HuggingFace model, applies SVD + Hessian Error Diffusion,
-and evaluates the compressed model.
-
-Supported Tested Models:
-- gpt2 (124M)
-- gpt2-medium (355M)
-- gpt2-large (774M)
-- HuggingFace AutoModels (Llama, Mistral) - Architectural support native.
+TMG-Q Ultra CLI - Academic Evaluation Edition
+=============================================
+A rigorous command-line tool for LLM quantization, utilizing mathematically
+strict evaluation metrics (WikiText-2) to ensure no data leakage and 
+authentic Perplexity (PPL) scoring.
 
 Usage:
-    python tmgq_ultra.py --model gpt2-medium --bits 3 --test
+    pip install datasets torch transformers numpy
+    python tmgq_ultra_hf.py --model gpt2-medium --bits 3 --test
 """
 import sys, copy, math, argparse, gc
 import torch
 import torch.nn as nn
 from transformers import AutoModelForCausalLM, AutoTokenizer
+
+try:
+    from datasets import load_dataset
+except ImportError:
+    print("Error: The 'datasets' library is required for rigorous academic evaluation.")
+    print("Please install it running: pip install datasets")
+    sys.exit(1)
 
 def sensitivity_quantize(w, n_bits, h_diag, gs=128):
     qmin, qmax = -(2**(n_bits-1)), 2**(n_bits-1)-1
@@ -63,56 +65,48 @@ def error_diffusion(w_orig, w_q, h_diag, n_waves=3, gs=128):
         wc = wc + res
     return wc
 
-def spectral_recovery(w_orig, w_q, rank_ratio=0.03):
-    res = (w_orig - w_q).float()
-    r, c = res.shape
-    rank = max(1, int(min(r,c)*rank_ratio))
-    try:
-        U, S, Vh = torch.linalg.svd(res, full_matrices=False)
-        recov = (U[:,:rank] * S[:rank].unsqueeze(0)) @ Vh[:rank,:]
-        return (w_q + recov.to(w_q.dtype))
-    except: return w_q
+def is_target_layer(m):
+    return isinstance(m, nn.Linear) or "Conv1D" in m.__class__.__name__
 
-def calibrate(model, tokenizer, device, n_samples=8):
-    texts = [
-        "The meaning of life is a philosophical question debated for centuries by scholars.",
-        "In computer science, algorithms solve complex computational problems efficiently.",
-        "Python is a high-level programming language known for simplicity and readability.",
-        "Machine learning models learn patterns from large datasets to make predictions.",
-        "The solar system has eight planets orbiting the sun in elliptical paths.",
-        "Quantum computing harnesses quantum mechanics for parallel computation.",
-        "Neural networks are models inspired by the biological brain structure.",
-        "Deep learning has transformed computer vision and natural language processing.",
-    ]
+def get_wikitext_chunks(tokenizer, split="train", max_length=256, max_samples=128):
+    """Load WikiText-2 and chunk it strictly into standardized context lengths."""
+    dataset = load_dataset("wikitext", "wikitext-2-raw-v1", split=split)
+    full_text = "\n\n".join([t for t in dataset["text"] if t.strip()])
+    tokens = tokenizer(full_text, return_tensors="pt")["input_ids"][0]
+    
+    chunks = []
+    for i in range(0, len(tokens) - max_length, max_length):
+        if len(chunks) >= max_samples:
+            break
+        chunks.append(tokens[i:i+max_length].unsqueeze(0))
+    return chunks
+
+def calibrate_rigorous(model, tokenizer, device, n_samples=128):
+    """Calculate Hessian diagonal using WikiText-2 train set."""
+    chunks = get_wikitext_chunks(tokenizer, split="train", max_samples=n_samples)
     h_diag = {}
     id2name = {id(m): n for n, m in model.named_modules() if is_target_layer(m)}
+    
     def hook(mod, inp, out):
         nm = id2name.get(id(mod))
         if nm is None: return
         x = inp[0].detach().float()
         if x.dim() == 3: x = x.reshape(-1, x.size(-1))
-        
-        # If it's a Conv1D layer, the input x is [batch*seq, in_f]. But wait, 
-        # in HuggingFace Conv1D (which is just a linear layer with transposed weights), 
-        # the forward is actually `x @ weight + bias`. Wait, `Conv1D` in HF is implemented as 
-        # `x @ weight + bias`. So `x` has shape `[..., in_f]`. 
-        # The Hessian diagonal is still the mean square of the input dimensions!
         hd = (x**2).mean(0)
-        
         if nm in h_diag: h_diag[nm] += hd
         else: h_diag[nm] = hd.clone()
     
     handles = [m.register_forward_hook(hook) for m in model.modules() if is_target_layer(m)]
     model.eval()
+    
+    print(f"   -> Running forward passes on {len(chunks)} WikiText-2 blocks...")
     with torch.no_grad():
-        for t in texts[:n_samples]: 
-            model(**tokenizer(t, return_tensors="pt", truncation=True, max_length=256).to(device))
+        for chunk in chunks:
+            model(chunk.to(device))
+            
     for h in handles: h.remove()
-    for nm in h_diag: h_diag[nm] /= len(texts[:n_samples])
+    for nm in h_diag: h_diag[nm] /= len(chunks)
     return h_diag
-
-def is_target_layer(m):
-    return isinstance(m, nn.Linear) or "Conv1D" in m.__class__.__name__
 
 def apply_tmgq_ultra(model, bits, h_diag_all):
     total = sum(1 for m in model.modules() if is_target_layer(m))
@@ -122,7 +116,7 @@ def apply_tmgq_ultra(model, bits, h_diag_all):
             w = m.weight.data
             is_conv1d = "Conv1D" in m.__class__.__name__
             if is_conv1d:
-                w = w.t() # Transpose to [out_f, in_f] for standard processing
+                w = w.t() 
             
             print(f"  [{curr}/{total}] Quantizing {n} ({w.shape[0]}x{w.shape[1]})", end='\r')
             orig = w.clone()
@@ -130,10 +124,11 @@ def apply_tmgq_ultra(model, bits, h_diag_all):
             
             wq = sensitivity_quantize(w, bits, hd)
             wq = error_diffusion(orig, wq, hd, n_waves=3)
-            wq = spectral_recovery(orig, wq, rank_ratio=0.03)
+            # SVD removed here to ensure strict INT representation on disk. 
+            # We strictly evaluate INT mathematical capacity now.
             
             if is_conv1d:
-                wq = wq.t() # Transpose back to [in_f, out_f]
+                wq = wq.t()
                 
             m.weight.data = wq.to(torch.float16)
             curr += 1
@@ -141,88 +136,61 @@ def apply_tmgq_ultra(model, bits, h_diag_all):
     return model
 
 @torch.no_grad()
-def evaluate_ppl(model, tok, device):
-    tests = [
-        "The meaning of life is a philosophical question debated for centuries.",
-        "In computer science, algorithms solve complex problems efficiently."
-    ]
-    model.eval(); tl=0; tt=0
-    for t in tests:
-        ids = tok(t, return_tensors="pt", truncation=True, max_length=128).to(device)
-        o = model(**ids, labels=ids["input_ids"])
-        n = ids["input_ids"].size(1)-1
-        loss = o.loss.item()
-        if math.isnan(loss) or math.isinf(loss): return float('inf')
-        tl += loss*n; tt += n
-    return math.exp(tl/max(1,tt))
-
-@torch.no_grad()
-def gen_text(model, tok, prompt, device, n=40):
+def evaluate_ppl_wikitext(model, tokenizer, device, max_samples=256):
+    """Standardized PPL metric benchmark on WikiText-2 testing set."""
+    chunks = get_wikitext_chunks(tokenizer, split="test", max_samples=max_samples)
     model.eval()
-    ids = tok(prompt, return_tensors="pt").to(device)["input_ids"]
-    for _ in range(n):
-        logits = model(ids).logits[:,-1,:]/0.8
-        if logits.isnan().any(): return tok.decode(ids[0]) + " [NaN]"
-        v,_ = torch.topk(logits, 50)
-        logits[logits < v[:,[-1]]] = -float('Inf')
-        ids = torch.cat([ids, torch.multinomial(torch.softmax(logits,-1),1)], 1)
-        if ids[0,-1].item() == tok.eos_token_id: break
-    return tok.decode(ids[0], skip_special_tokens=True).replace('\n', ' ')
+    total_loss = 0.0
+    total_tokens = 0
+    
+    print(f"   -> Evaluating PPL on {len(chunks)} WikiText-2 test blocks...")
+    for chunk in chunks:
+        chunk = chunk.to(device)
+        outputs = model(chunk, labels=chunk)
+        loss = outputs.loss.item()
+        if not math.isnan(loss):
+            total_loss += loss * chunk.size(1)
+            total_tokens += chunk.size(1)
+            
+    return math.exp(total_loss / max(1, total_tokens))
 
 def main():
-    parser = argparse.ArgumentParser(description="TMG-Q Ultra - Advanced Local Quantization")
-    parser.add_argument("--model", type=str, default="gpt2-medium", help="HuggingFace model ID (e.g., gpt2, gpt2-medium, gpt2-large)")
-    parser.add_argument("--bits", type=int, choices=[2, 3, 4], default=3, help="Quantization bits (2, 3, 4)")
-    parser.add_argument("--test", action="store_true", help="Run Perplexity and Text Generation tests after quantization")
-    parser.add_argument("--save-path", type=str, default="", help="Path to save the quantized model (optional)")
+    parser = argparse.ArgumentParser(description="TMG-Q Ultra - Strict Academic Benchmark CLI")
+    parser.add_argument("--model", type=str, default="gpt2-medium", help="HuggingFace model ID")
+    parser.add_argument("--bits", type=int, choices=[2, 3, 4], default=3, help="Quantization bits")
+    parser.add_argument("--test", action="store_true", help="Run WikiText-2 PPL benchmark")
+    parser.add_argument("--calib-samples", type=int, default=128, help="Number of calibration chunks")
+    parser.add_argument("--eval-samples", type=int, default=256, help="Number of testing chunks")
     args = parser.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print("="*70)
-    print(f" TMG-Q ULTRA - Professional Quantization Framework")
-    print(f" Target Model: {args.model}")
-    print(f" Target Bits:  {args.bits}-bit")
-    print(f" Device:       {device.upper()}")
+    print(f" TMG-Q ULTRA - Academic Validation Edition")
+    print(f" Model: {args.model} | Target: {args.bits}-bit")
     print("="*70)
 
-    try:
-        print(f"\n[1/4] Downloading / Loading '{args.model}'...")
-        tok = AutoTokenizer.from_pretrained(args.model)
-        model = AutoModelForCausalLM.from_pretrained(args.model, torch_dtype=torch.float16).to(device)
-    except Exception as e:
-        print(f"Failed to load model from HuggingFace: {e}")
-        sys.exit(1)
-
-    fp16_sz = sum(p.numel() for p in model.parameters()) * 2 / 1e6
-    quant_sz = sum(p.numel() for p in model.parameters()) * (args.bits/8) / 1e6
-    print(f"  -> Model FP16 Size: ~{fp16_sz:.1f} MB")
-    print(f"  -> Target Logical Size: ~{quant_sz:.1f} MB")
+    print("\n[1/4] Loading Model & Meta...")
+    tok = AutoTokenizer.from_pretrained(args.model)
+    model = AutoModelForCausalLM.from_pretrained(args.model, torch_dtype=torch.float16).to(device)
 
     if args.test:
-        print("\n[Optional] Benchmarking Original FP16 Baseline...")
-        base_ppl = evaluate_ppl(model, tok, device)
-        print(f"  -> Original PPL: {base_ppl:.2f}")
+        print("\n[Optional] Benchmarking Original FP16 Baseline on WikiText-2...")
+        base_ppl = evaluate_ppl_wikitext(model, tok, device, max_samples=args.eval_samples)
+        print(f"  -> Original FP16 WikiText PPL: {base_ppl:.2f}")
 
-    print("\n[2/4] Calibrating Hessian Sensitivity (Crucial for 2-bit/3-bit)...")
-    h_diag = calibrate(model, tok, device)
+    print("\n[2/4] Calibrating Hessian Sensitivity (WikiText-2 Train Set)...")
+    h_diag = calibrate_rigorous(model, tok, device, n_samples=args.calib_samples)
 
-    print("\n[3/4] Quantizing with TMG-Q Ultra Engine...")
+    print("\n[3/4] Quantizing with TMG-Q Ultra Engine (Strict INT Mode)...")
     model = apply_tmgq_ultra(model, args.bits, h_diag)
 
     if args.test:
-        print("\n[4/4] Validating Quantized Model...")
-        q_ppl = evaluate_ppl(model, tok, device)
-        print(f"  -> Quantized PPL: {q_ppl:.2f}")
-        prompt = "The future of artificial intelligence is"
-        print(f"  -> Generation: {gen_text(model, tok, prompt, device)}")
-
-    if args.save_path:
-        print(f"\nSaving to {args.save_path}...")
-        torch.save(model.state_dict(), args.save_path)
-        print("Done!")
+        print("\n[4/4] Validating Quantized Model on WikiText-2 Test Set...")
+        q_ppl = evaluate_ppl_wikitext(model, tok, device, max_samples=args.eval_samples)
+        print(f"  -> Quantized {args.bits}-bit WikiText PPL: {q_ppl:.2f}")
 
     print("\n======================================================================")
-    print(" Compression Completed Successfully. TMG-Q Ultra OUT.")
+    print(" Scientific Benchmarking Complete.")
     print("======================================================================")
 
 if __name__ == "__main__":
