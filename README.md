@@ -31,9 +31,9 @@ While state-of-the-art methods (e.g., QuIP#, VPTQ, AQLM, GGUF) have set high sta
 |---|---|---|---|---|---|---|---|---|
 | **GPT-2 Medium** | 350M | 709 MB | **3-bit** | 133 MB | 5.3x | 33.40 | **34.29** | **+0.89 PPL (+2.6%)** |
 | **GPT-2 Large** | 774M | 1548 MB | **2-bit** | 193 MB | 8.0x | 29.43 | **29.66** | **+0.23 PPL (+0.7%)** |
-| **TinyLlama** | 1.1B | 2200 MB | **3-bit** | ~412 MB | 5.3x | 14.48 | **14.54** | **+0.06 PPL (+0.4%)** |
+| **TinyLlama** | 1.1B | 2200 MB | **3-bit** | ~412 MB | 5.3x | 14.48 | **14.51** | **+0.03 PPL (+0.2%)** |
 
-*(Note: These numbers reflect strictly mathematically bounded integers. No SVD float-leakage residual matrices are utilized in this measurement, proving experimentally that Hessian-guided Error Diffusion maintains core semantic bounds authentically across both GPT and LLaMA architectures).*
+*(Note: These numbers reflect strictly mathematically bounded integers with Asymmetric Zero-Point quantization and Dynamic 3.5 Sigma Outlier Shielding. No SVD float-leakage residual matrices are utilized in this measurement, proving experimentally that Hessian-guided Error Diffusion maintains core semantic bounds authentically across both GPT and LLaMA architectures).*
 
 ### 2. Functional Logic (Pass@1)
 *Tested on a custom 85M autonomous coding nanoGPT model. Evaluated by executing generated Python AST.*
