@@ -92,6 +92,7 @@ def chat_interface():
                     **inputs,
                     max_new_tokens=256,
                     do_sample=False,
+                    repetition_penalty=1.3,
                     pad_token_id=tokenizer.eos_token_id
                 )
             
