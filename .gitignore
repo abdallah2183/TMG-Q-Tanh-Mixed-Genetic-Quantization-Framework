@@ -1,0 +1,19 @@
+# Ignore
+__pycache__/
+*.pyc
+*.pyo
+*.pt
+*.bin
+*.safetensors
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+.venv/
+venv/
+env/
+.env
+*.log
+.DS_Store
+Thumbs.db
