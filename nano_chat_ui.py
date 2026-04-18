@@ -22,7 +22,7 @@ def load_meta():
     return meta["stoi"], meta["itos"]
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
-ckpt_path = "out-self-code/ckpt_3bit.pt" # Default path
+ckpt_path = "out-self-code-long/ckpt_3bit.pt" # Correct path to the 3-bit long trained model
 
 # Load model
 print(f"Loading {ckpt_path}...")
@@ -61,7 +61,7 @@ with gr.Blocks(theme=gr.themes.Base()) as demo:
     
     with gr.Row():
         with gr.Column(scale=3):
-            chatbot = gr.Chatbot(height=500)
+            chatbot = gr.Chatbot(height=500, type="messages")
             msg = gr.Textbox(label="Enter Prompt (Python Context)")
         with gr.Column(scale=1):
             temp_slider = gr.Slider(0.1, 2.0, value=0.8, label="Temperature")
@@ -70,7 +70,8 @@ with gr.Blocks(theme=gr.themes.Base()) as demo:
 
     def respond(user_message, chat_history, temp, max_tokens):
         bot_message = generate_text(user_message, max_tokens, temp)
-        chat_history.append((user_message, bot_message))
+        chat_history.append({"role": "user", "content": user_message})
+        chat_history.append({"role": "assistant", "content": bot_message})
         return "", chat_history
 
     msg.submit(respond, [msg, chatbot, temp_slider, tokens_slider], [msg, chatbot])
