@@ -16,7 +16,7 @@ def load_packed_huggingface(model_name, ckpt_path):
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     
     print("Building mathematical skeleton (allocating temporary CPU memory)...")
-    model = AutoModelForCausalLM.from_config(config, torch_dtype=torch.float16)
+    model = AutoModelForCausalLM.from_config(config, torch_dtype=torch.bfloat16)
 
     print(f"Loading TMG-Q Ultra Packed Payload [{ckpt_path}]...")
     state_dict = torch.load(ckpt_path, map_location="cpu")

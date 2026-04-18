@@ -41,9 +41,9 @@ def sensitivity_quantize_packable(w, n_bits, gs=128):
     return limits_int, scales, zeros
 
 def export_huggingface_model(model_name="TinyLlama/TinyLlama-1.1B-Chat-v1.0", bits=4, export_path="TinyLlama_4bit_TMGQ.pt"):
-    print(f"Loading base FP16 model: {model_name} from HuggingFace...")
+    print(f"Loading base bfloat16 model: {model_name} from HuggingFace...")
     tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, low_cpu_mem_usage=True)
+    model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16, low_cpu_mem_usage=True)
     
     total_layers = sum(1 for m in model.modules() if isinstance(m, nn.Linear))
     current_layer = 1
