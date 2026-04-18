@@ -44,6 +44,7 @@ def load_packed_huggingface(model_name, ckpt_path):
                 
                 pre, _, post = n.rpartition('.')
                 parent = rgetattr(model, pre) if pre else model
+                setattr(parent, post, qlayer)
     # Load the compressed INT32 dictionaries over the FP16 ones
     model.load_state_dict(state_dict, strict=False)
     
