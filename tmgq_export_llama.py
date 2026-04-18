@@ -1,8 +1,6 @@
-import os
-import torch
 import torch.nn as nn
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from tmgq_packer import QuantizedLinear, pack_3bit
+from tmgq_packer import QuantizedLinear, pack_4bit
 import math
 
 def rgetattr(obj, attr, *args):
@@ -41,7 +39,7 @@ def sensitivity_quantize_packable(w, n_bits, gs=128):
         
     return limits_int, scales, zeros
 
-def export_huggingface_model(model_name="TinyLlama/TinyLlama-1.1B-Chat-v1.0", bits=3, export_path="TinyLlama_3bit_TMGQ.pt"):
+def export_huggingface_model(model_name="TinyLlama/TinyLlama-1.1B-Chat-v1.0", bits=4, export_path="TinyLlama_4bit_TMGQ.pt"):
     print(f"Loading base FP16 model: {model_name} from HuggingFace...")
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, low_cpu_mem_usage=True)
@@ -65,8 +63,8 @@ def export_huggingface_model(model_name="TinyLlama/TinyLlama-1.1B-Chat-v1.0", bi
         limits_int, scales, zeros = sensitivity_quantize_packable(w, bits, gs=128)
         
         # Deploy the TMG-Q Packer manually without float drift
-        qlayer = QuantizedLinear(m.in_features, m.out_features, bias=m.bias is not None, gs=128)
-        packed_w, shape, pad = pack_3bit(limits_int)
+        qlayer = QuantizedLinear(m.in_features, m.out_features, bias=m.bias is not None, gs=128, n_bits=bits)
+        packed_w, shape, pad = pack_4bit(limits_int)
         
         qlayer.qweight = packed_w
         qlayer.scales = scales

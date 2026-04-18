@@ -33,13 +33,14 @@ def load_packed_huggingface(model_name, ckpt_path):
         for n in quantized_keys:
             m = rgetattr(model, n, None)
             if m is not None and isinstance(m, nn.Linear):
-                qlayer = QuantizedLinear(m.in_features, m.out_features, bias=m.bias is not None, gs=128)
+                qlayer = QuantizedLinear(m.in_features, m.out_features, bias=m.bias is not None, gs=128, n_bits=4)
                 
                 # Pre-size to absorb the packed data
                 qlayer.qweight = torch.empty(state_dict[f"{n}.qweight"].shape, dtype=torch.int32)
                 qlayer.scales = torch.empty(state_dict[f"{n}.scales"].shape, dtype=torch.float16)
                 qlayer.zeros = torch.empty(state_dict[f"{n}.zeros"].shape, dtype=torch.float16)
                 qlayer.w_shape = torch.empty(state_dict[f"{n}.w_shape"].shape, dtype=torch.int32)
+                qlayer.n_bits = torch.tensor(4, dtype=torch.int32)
                 
                 pre, _, post = n.rpartition('.')
                 parent = rgetattr(model, pre) if pre else model
@@ -54,7 +55,7 @@ def load_packed_huggingface(model_name, ckpt_path):
 
 def chat_interface():
     model_name = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
-    ckpt_path = "TinyLlama_3bit_TMGQ.pt"
+    ckpt_path = "TinyLlama_4bit_TMGQ.pt"
     
     try:
         model, tokenizer, device = load_packed_huggingface(model_name, ckpt_path)

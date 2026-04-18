@@ -57,6 +57,36 @@ def unpack_3bit(packed, original_shape, pad_len):
         
     return w_flat.view(original_shape)
 
+def pack_4bit(limits_int):
+    original_shape = limits_int.shape
+    w_flat = limits_int.flatten()
+    n = w_flat.numel()
+    
+    pad_len = (8 - (n % 8)) % 8
+    if pad_len > 0:
+        w_flat = F.pad(w_flat, (0, pad_len), value=0)
+    w_flat = w_flat.view(-1, 8)
+    
+    packed = torch.zeros(w_flat.shape[0], dtype=torch.int32, device=limits_int.device)
+    for i in range(8):
+        shifted = torch.bitwise_left_shift(w_flat[:, i], i * 4)
+        packed = torch.bitwise_or(packed, shifted)
+        
+    return packed, original_shape, pad_len
+
+def unpack_4bit(packed, original_shape, pad_len):
+    unpacked = torch.zeros((packed.shape[0], 8), dtype=torch.int32, device=packed.device)
+    for i in range(8):
+        shifted = torch.bitwise_right_shift(packed, i * 4)
+        extracted = torch.bitwise_and(shifted, 15) # 0b1111 for 4-bit
+        unpacked[:, i] = extracted
+        
+    w_flat = unpacked.flatten()
+    if pad_len > 0:
+        w_flat = w_flat[:-pad_len]
+        
+    return w_flat.view(original_shape)
+
 def extract_packed_schema(w_q, n_bits=3, gs=128):
     """
     Takes a mathematical quantized Float schema and strictly extracts its INT format,
@@ -92,11 +122,12 @@ class QuantizedLinear(nn.Module):
     Holds only INT32 packed weights in VRAM (Shrinkage: 10x per INT32 versus FP16).
     Dynamically unpacks and scales during the Forward pass.
     """
-    def __init__(self, in_features, out_features, bias=True, gs=128):
+    def __init__(self, in_features, out_features, bias=True, gs=128, n_bits=3):
         super().__init__()
         self.in_features = in_features
         self.out_features = out_features
         self.gs = gs
+        self.n_bits_val = n_bits
         
         # We explicitly use buffers because these are not trainable via autograd
         self.register_buffer('qweight', torch.empty(0, dtype=torch.int32))
@@ -104,6 +135,7 @@ class QuantizedLinear(nn.Module):
         self.register_buffer('zeros', torch.empty(0, dtype=torch.float16))
         self.register_buffer('w_shape', torch.empty(2, dtype=torch.int32))
         self.register_buffer('pad_len', torch.tensor(0, dtype=torch.int32))
+        self.register_buffer('n_bits', torch.tensor(n_bits, dtype=torch.int32))
         
         if bias:
             self.bias = nn.Parameter(torch.zeros(out_features, dtype=torch.float16))
@@ -132,7 +164,13 @@ class QuantizedLinear(nn.Module):
         
         # 1. Unpack limits securely back to Int
         shape = tuple(self.w_shape.tolist())
-        limits_int = unpack_3bit(self.qweight, shape, self.pad_len.item())
+        bits = self.n_bits.item() if hasattr(self, 'n_bits') else self.n_bits_val
+        
+        if bits == 3:
+            limits_int = unpack_3bit(self.qweight, shape, self.pad_len.item())
+        else:
+            limits_int = unpack_4bit(self.qweight, shape, self.pad_len.item())
+            
         limits_float = limits_int.to(dtype)
         
         # 2. Dequantize Asymmetrically by Groups
