@@ -1,6 +1,7 @@
 import os
 import torch
 import torch.nn as nn
+from transformers import AutoModelForCausalLM, AutoTokenizer
 from tmgq_packer import QuantizedLinear, pack_3bit
 import math
 
