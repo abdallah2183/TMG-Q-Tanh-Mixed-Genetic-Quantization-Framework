@@ -122,8 +122,8 @@ def apply_omegaquant(model, bits, h_diag_all, device):
     
     for n, m in model.named_modules():
         if isinstance(m, nn.Linear):
-            print(f"  [{current_layer}/{total_layers}] Quantizing {n} ({w.shape[0]}x{w.shape[1]})", end='\r')
             w = m.weight.data
+            print(f"  [{current_layer}/{total_layers}] Quantizing {n} ({w.shape[0]}x{w.shape[1]})", end='\r')
             orig = w.clone()
             hd = h_diag_all.get(n)
             
