@@ -15,9 +15,8 @@ def load_packed_huggingface(model_name, ckpt_path):
     config = AutoConfig.from_pretrained(model_name)
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     
-    print("Building blank memory allocation matrix...")
-    with torch.device('meta' if torch.cuda.is_available() else 'cpu'):
-        model = AutoModelForCausalLM.from_config(config)
+    print("Building mathematical skeleton (allocating temporary CPU memory)...")
+    model = AutoModelForCausalLM.from_config(config, torch_dtype=torch.float16)
 
     print(f"Loading TMG-Q Ultra Packed Payload [{ckpt_path}]...")
     state_dict = torch.load(ckpt_path, map_location="cpu")
@@ -44,10 +43,7 @@ def load_packed_huggingface(model_name, ckpt_path):
                 
                 pre, _, post = n.rpartition('.')
                 parent = rgetattr(model, pre) if pre else model
-                setattr(parent, post, qlayer)
-                
-    # Bypass strict dimension enforcement on empty buffers
-    model.to_empty(device="cuda" if torch.cuda.is_available() else "cpu")
+    # Load the compressed INT32 dictionaries over the FP16 ones
     model.load_state_dict(state_dict, strict=False)
     
     device = "cuda" if torch.cuda.is_available() else "cpu"
