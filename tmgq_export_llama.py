@@ -24,12 +24,8 @@ def sensitivity_quantize_packable(w, n_bits, gs=128):
     for i, cs in enumerate(range(0, cols, gs)):
         ce = min(cs+gs, cols)
         block = w[:, cs:ce].clone()
-        med = block.median()
-        mad = (block - med).abs().median()
-        sigma = 1.4826 * mad
-        clamp_min = med - (3.5 * sigma)
-        clamp_max = med + (3.5 * sigma)
-        block = torch.clamp(block, clamp_min, clamp_max)
+        
+        # Standard pure mathematical limits (Eliminating global clamping distortion)
         
         b_min = block.min(dim=1, keepdim=True).values
         b_max = block.max(dim=1, keepdim=True).values
