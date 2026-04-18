@@ -30,7 +30,7 @@ def load_meta():
     return meta["stoi"], meta["itos"]
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
-ckpt_path = "out-self-code-long/ckpt_3bit.pt" # Correct path to the 3-bit long trained model
+ckpt_path = "out-self-code-long/ckpt_3bit_packed.pt" # Correct path to the 3-bit packed trained model
 
 # Load model
 print(f"Loading {ckpt_path}...")
@@ -54,11 +54,19 @@ try:
             m = rgetattr(model, n, None)
             if m is not None and isinstance(m, nn.Linear):
                 qlayer = QuantizedLinear(m.in_features, m.out_features, bias=m.bias is not None, gs=128)
+                
+                # Pre-size the buffers to match incoming physical parameters!
+                qlayer.qweight = torch.empty(state_dict[f"{n}.qweight"].shape, dtype=torch.int32)
+                qlayer.scales = torch.empty(state_dict[f"{n}.scales"].shape, dtype=torch.float16)
+                qlayer.zeros = torch.empty(state_dict[f"{n}.zeros"].shape, dtype=torch.float16)
+                qlayer.w_shape = torch.empty(state_dict[f"{n}.w_shape"].shape, dtype=torch.int32)
+                
                 pre, _, post = n.rpartition('.')
                 parent = rgetattr(model, pre) if pre else model
                 setattr(parent, post, qlayer)
 
-    model.load_state_dict(state_dict)
+    # Use strict=False just in case minor un-packed buffers conflict
+    model.load_state_dict(state_dict, strict=False)
     model.eval()
     model.to(device)
     stoi, itos = load_meta()
