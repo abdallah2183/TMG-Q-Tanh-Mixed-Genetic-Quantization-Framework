@@ -34,14 +34,14 @@ def sensitivity_quantize_packable(w, n_bits, gs=128):
         b_min = block.min(dim=1, keepdim=True).values
         b_max = block.max(dim=1, keepdim=True).values
         scale = (b_max - b_min).clamp(min=1e-8) / q_levels
-        zero_point = torch.round(-b_min / scale)
         
-        ws = (block / scale) + zero_point
+        # Robust Int Mapping (Eliminates float16 Inf Overflow)
+        ws = (block - b_min) / scale
         wr = torch.clamp(torch.round(ws), 0, q_levels).to(torch.int32)
         
         limits_int[:, cs:ce] = wr
         scales[:, i:i+1] = scale.to(torch.float16)
-        zeros[:, i:i+1] = zero_point.to(torch.float16)
+        zeros[:, i:i+1] = b_min.to(torch.float16)
         
     return limits_int, scales, zeros
 

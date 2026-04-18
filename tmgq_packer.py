@@ -76,14 +76,13 @@ def extract_packed_schema(w_q, n_bits=3, gs=128):
         b_min = block.min(dim=1, keepdim=True).values
         b_max = block.max(dim=1, keepdim=True).values
         scale = (b_max - b_min).clamp(min=1e-8) / q_levels
-        zero_point = torch.round(-b_min / scale)
         
-        ws = (block / scale) + zero_point
+        ws = (block - b_min) / scale
         wr = torch.clamp(torch.round(ws), 0, q_levels)
         
         limits[:, cs:ce] = wr.to(torch.int32)
         scales[:, i:i+1] = scale.to(torch.float16)
-        zeros[:, i:i+1] = zero_point.to(torch.float16)
+        zeros[:, i:i+1] = b_min.to(torch.float16)
 
     return limits, scales, zeros
 
@@ -143,9 +142,9 @@ class QuantizedLinear(nn.Module):
         for i, cs in enumerate(range(0, self.in_features, self.gs)):
             ce = min(cs+self.gs, self.in_features)
             s = self.scales[:, i:i+1].to(dtype)
-            z = self.zeros[:, i:i+1].to(dtype)
-            # Reverse: w = (limits - z) * s
-            w_dequantized[:, cs:ce] = (limits_float[:, cs:ce] - z) * s
+            z = self.zeros[:, i:i+1].to(dtype) # Actually holds b_min directly!
+            # Reverse: w = (limits * s) + b_min
+            w_dequantized[:, cs:ce] = (limits_float[:, cs:ce] * s) + z
             
         # 3. Standard Matrix Multiplication Execution
         return F.linear(x, w_dequantized, self.bias)
