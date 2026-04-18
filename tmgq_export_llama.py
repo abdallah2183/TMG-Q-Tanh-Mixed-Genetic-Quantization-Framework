@@ -1,8 +1,7 @@
 import os
 import torch
 import torch.nn as nn
-from transformers import AutoModelForCausalLM, AutoTokenizer
-from tmgq_packer import QuantizedLinear
+from tmgq_packer import QuantizedLinear, pack_3bit
 import math
 
 def rgetattr(obj, attr, *args):
@@ -11,11 +10,17 @@ def rgetattr(obj, attr, *args):
     import functools
     return functools.reduce(_getattr, [obj] + attr.split('.'))
 
-def sensitivity_quantize(w, n_bits, h_diag=None, gs=128):
+def sensitivity_quantize_packable(w, n_bits, gs=128):
+    """Directly extracts pure INT limits and FP16 scales without reconstruct decay."""
     q_levels = (2**n_bits) - 1
     rows, cols = w.shape
-    w_q = torch.zeros_like(w)
-    for cs in range(0, cols, gs):
+    num_blocks = math.ceil(cols / gs)
+    
+    limits_int = torch.zeros_like(w, dtype=torch.int32)
+    scales = torch.zeros((rows, num_blocks), dtype=torch.float16, device=w.device)
+    zeros = torch.zeros((rows, num_blocks), dtype=torch.float16, device=w.device)
+    
+    for i, cs in enumerate(range(0, cols, gs)):
         ce = min(cs+gs, cols)
         block = w[:, cs:ce].clone()
         med = block.median()
@@ -24,32 +29,20 @@ def sensitivity_quantize(w, n_bits, h_diag=None, gs=128):
         clamp_min = med - (3.5 * sigma)
         clamp_max = med + (3.5 * sigma)
         block = torch.clamp(block, clamp_min, clamp_max)
+        
         b_min = block.min(dim=1, keepdim=True).values
         b_max = block.max(dim=1, keepdim=True).values
         scale = (b_max - b_min).clamp(min=1e-8) / q_levels
         zero_point = torch.round(-b_min / scale)
+        
         ws = (block / scale) + zero_point
-        wr = torch.clamp(torch.round(ws), 0, q_levels)
-        w_q[:, cs:ce] = (wr - zero_point) * scale
-    return w_q
-
-def error_diffusion(orig, wc, h_diag=None, n_waves=3, gs=128):
-    res = orig - wc
-    for wave in range(n_waves):
-        wave_scale = 1.0 / (2 ** wave)
-        res_scaled = res * wave_scale
-        rqmax = res_scaled.max()
-        rqmin = res_scaled.min()
-        if rqmax == rqmin:
-            break
-        for cs in range(0, res.shape[1], gs):
-            ce = min(cs+gs, res.shape[1])
-            blk = res_scaled[:, cs:ce]
-            sc = blk.abs().max(1, keepdim=True).values.clamp(min=1e-8)/rqmax
-            res_scaled[:, cs:ce] = torch.clamp(torch.round(blk/sc), rqmin, rqmax)*sc
-        wc = wc + res_scaled
-        res = orig - wc
-    return wc
+        wr = torch.clamp(torch.round(ws), 0, q_levels).to(torch.int32)
+        
+        limits_int[:, cs:ce] = wr
+        scales[:, i:i+1] = scale.to(torch.float16)
+        zeros[:, i:i+1] = zero_point.to(torch.float16)
+        
+    return limits_int, scales, zeros
 
 def export_huggingface_model(model_name="TinyLlama/TinyLlama-1.1B-Chat-v1.0", bits=3, export_path="TinyLlama_3bit_TMGQ.pt"):
     print(f"Loading base FP16 model: {model_name} from HuggingFace...")
@@ -70,15 +63,21 @@ def export_huggingface_model(model_name="TinyLlama/TinyLlama-1.1B-Chat-v1.0", bi
              current_layer += 1
              continue
              
-        print(f"  [{current_layer}/{total_layers}] Compressing & Packing: {n} ({w.shape[0]}x{w.shape[1]})", end='\r')
-        orig = w.clone()
+        print(f"  [{current_layer}/{total_layers}] Extracting pure INT bounds & Packing: {n} ({w.shape[0]}x{w.shape[1]})", end='\r')
         
-        wq = sensitivity_quantize(w, bits)
-        wq = error_diffusion(orig, wq)
+        limits_int, scales, zeros = sensitivity_quantize_packable(w, bits, gs=128)
         
-        # Deploy the TMG-Q Packer!
+        # Deploy the TMG-Q Packer manually without float drift
         qlayer = QuantizedLinear(m.in_features, m.out_features, bias=m.bias is not None, gs=128)
-        qlayer.pack_from_float(wq, m.bias.data if m.bias is not None else None, n_bits=bits)
+        packed_w, shape, pad = pack_3bit(limits_int)
+        
+        qlayer.qweight = packed_w
+        qlayer.scales = scales
+        qlayer.zeros = zeros
+        qlayer.w_shape = torch.tensor(shape, dtype=torch.int32)
+        qlayer.pad_len = torch.tensor(pad, dtype=torch.int32)
+        if m.bias is not None:
+             qlayer.bias.data = m.bias.data.to(torch.float16)
         
         pre, _, post = n.rpartition('.')
         parent = rgetattr(model, pre) if pre else model
