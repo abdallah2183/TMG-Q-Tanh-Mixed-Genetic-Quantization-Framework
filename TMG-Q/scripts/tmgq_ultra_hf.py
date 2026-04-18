@@ -85,17 +85,24 @@ def calibrate(model, tokenizer, device, n_samples=8):
         "Deep learning has transformed computer vision and natural language processing.",
     ]
     h_diag = {}
-    id2name = {id(m): n for n, m in model.named_modules() if isinstance(m, nn.Linear)}
+    id2name = {id(m): n for n, m in model.named_modules() if is_target_layer(m)}
     def hook(mod, inp, out):
         nm = id2name.get(id(mod))
         if nm is None: return
         x = inp[0].detach().float()
         if x.dim() == 3: x = x.reshape(-1, x.size(-1))
+        
+        # If it's a Conv1D layer, the input x is [batch*seq, in_f]. But wait, 
+        # in HuggingFace Conv1D (which is just a linear layer with transposed weights), 
+        # the forward is actually `x @ weight + bias`. Wait, `Conv1D` in HF is implemented as 
+        # `x @ weight + bias`. So `x` has shape `[..., in_f]`. 
+        # The Hessian diagonal is still the mean square of the input dimensions!
         hd = (x**2).mean(0)
+        
         if nm in h_diag: h_diag[nm] += hd
         else: h_diag[nm] = hd.clone()
     
-    handles = [m.register_forward_hook(hook) for m in model.modules() if isinstance(m, nn.Linear)]
+    handles = [m.register_forward_hook(hook) for m in model.modules() if is_target_layer(m)]
     model.eval()
     with torch.no_grad():
         for t in texts[:n_samples]: 
@@ -104,17 +111,30 @@ def calibrate(model, tokenizer, device, n_samples=8):
     for nm in h_diag: h_diag[nm] /= len(texts[:n_samples])
     return h_diag
 
+def is_target_layer(m):
+    return isinstance(m, nn.Linear) or "Conv1D" in m.__class__.__name__
+
 def apply_tmgq_ultra(model, bits, h_diag_all):
-    total = sum(1 for m in model.modules() if isinstance(m, nn.Linear))
+    total = sum(1 for m in model.modules() if is_target_layer(m))
     curr = 1
     for n, m in model.named_modules():
-        if isinstance(m, nn.Linear):
-            print(f"  [{curr}/{total}] Quantizing {n}", end='\r')
-            w = m.weight.data; orig = w.clone()
+        if is_target_layer(m):
+            w = m.weight.data
+            is_conv1d = "Conv1D" in m.__class__.__name__
+            if is_conv1d:
+                w = w.t() # Transpose to [out_f, in_f] for standard processing
+            
+            print(f"  [{curr}/{total}] Quantizing {n} ({w.shape[0]}x{w.shape[1]})", end='\r')
+            orig = w.clone()
             hd = h_diag_all.get(n)
+            
             wq = sensitivity_quantize(w, bits, hd)
             wq = error_diffusion(orig, wq, hd, n_waves=3)
             wq = spectral_recovery(orig, wq, rank_ratio=0.03)
+            
+            if is_conv1d:
+                wq = wq.t() # Transpose back to [in_f, out_f]
+                
             m.weight.data = wq.to(torch.float16)
             curr += 1
     print(f"\n  Done Quantizing {total} layers!")
