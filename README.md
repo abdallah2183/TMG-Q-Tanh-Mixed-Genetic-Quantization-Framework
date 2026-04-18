@@ -1,106 +1,82 @@
-# TMG-Q Ultra: Tanh-Nonlinear Mixed Precision & Hessian Diffusion Quantization
+# TMG-Q: Tanh-Nonlinear Mixed Precision & Hessian Diffusion Quantization
 
-<p align="center">
-  <strong>The Ultimate Post-Training Quantization Framework for Large Language Models</strong>
-</p>
+**An Experimental Post-Training Quantization Framework for LLMs**
 
-<p align="center">
-  <img src="https://img.shields.io/badge/Python-3.10%2B-blue?logo=python" alt="Python">
-  <img src="https://img.shields.io/badge/PyTorch-2.0%2B-red?logo=pytorch" alt="PyTorch">
-  <img src="https://img.shields.io/badge/Status-State%20of%20the%20Art-brightgreen" alt="Status">
-</p>
+## 📖 Overview
 
----
+**TMG-Q** provides a post-training quantization methodology aimed at achieving 3-bit and 2-bit compression. Building upon initial genetic algorithm approaches, the current iteration utilizes **SVD Residual Recovery** coupled with **Hessian-guided Error Diffusion**. 
 
-## 🌟 What is TMG-Q Ultra (Formerly OmegaQuant)?
+While state-of-the-art methods (e.g., QuIP#, VPTQ, AQLM, GGUF) have set high standards for sub-4-bit quantization, TMG-Q explores an alternative heuristic: mathematically neutralizing floating-point perturbation noise while preserving semantic integrity via localized structural scaling.
 
-**TMG-Q Ultra** is the next-generation, state-of-the-art model quantization framework. Taking the massive leaps from our earlier TMG-Q genetic algorithm, we have re-engineered the core to utilize **SVD Residual Recovery** and **Hessian-guided Error Diffusion**.
-
-This enables us to achieve **3-bit and 2-bit quantization** on standard LLMs (like GPT-2 and LLaMA) with nearly **zero data leakage**, completely avoiding the semantic collapse suffered by Naive, GPTQ, or AWQ quantization methods.
-
-### 🔥 Why TMG-Q Ultra Destroys the Competition:
-| Feature | TMG-Q Ultra | GPTQ / AWQ | Naive INT4 |
-|---------|-------------|-------------|------------|
-| **Quantization Logic** | Hessian Sensitivity + SVD | Hessian Inverse / Scaled | Uniform Min/Max |
-| **2-bit Performance** | **Usable / Intelligible** | Broken / Hallucinations | Complete Garbage |
-| **3-bit Performance** | **Near-lossless (95%+ Baseline)** | Degraded | Broken |
-| **Stability** | **High** (No Matrix Inversion) | Fragile (Cholesky failures) | Stable but terrible |
+*Note: The current results are preliminary. Full systematic benchmarking on standardized datasets (WikiText-2, C4, HumanEval, MBPP) is required to establish definitive parity with current SOTA methodologies.*
 
 ---
 
-## 🚀 Quick Start: Compress your Models Instantly
+## 🔬 Methodology
 
-We provide an interactive Command Line tool to automatically download, compress, and test any HuggingFace model directly from your terminal!
+1. **Hessian Diagonal Extraction**: We calibrate the model using forward passes on sampled texts to approximate the diagonal of the Hessian matrix. This yields a per-weight sensitivity profile.
+2. **Error Diffusion Waves**: The residual quantization error $E = W_{orig} - W_{quant}$ is re-dispersed across the remaining weights in the same layer tensor, scaled strictly by the measured Hessian trace.
+3. **Truncated SVD Recovery**: The remaining un-diffusible error is factored using Single Value Decomposition. The top 3% of singular values are restored to neutralize the most damaging structural deviations.
 
-**Pre-requisites:**
+---
+
+## 📊 Preliminary Empirical Benchmarks
+
+*Disclaimer: These are preliminary benchmarks run on localized testing subsets. They indicate functional logic retention, but large-scale robust benchmarking (e.g., WikiText PPL) is slated for future testing.*
+
+### 1. PPL Impact on HuggingFace Models (Zero-Shot Subset)
+*Evaluated on a subset of complex semantic test sentences.*
+
+| Model | Params | FP16 Base | Target | Quantized Size | Compression | Baseline PPL | TMG-Q PPL | 
+|---|---|---|---|---|---|---|---|
+| **GPT-2 Medium** | 350M | 709 MB | **3-bit** | 133 MB | 5.3x | 38.30 | **37.76** | 
+| **GPT-2 Large** | 774M | 1548 MB | **2-bit** | 193 MB | 8.0x | 39.83 | **35.57** | 
+
+*(We theorize the PPL drop is due to SVD acting as a noise filter on our specific validation subset. Scaling this test to WikiText-2 is required to verify broader structural retention).*
+
+### 2. Functional Logic (Pass@1)
+*Tested on a custom 85M autonomous coding nanoGPT model. Evaluated by executing generated Python AST.*
+
+| Precision | Model Size | Pass@1 (Logic Success) | Degradation vs FP16 |
+|---|---|---|---|
+| 16-bit (Baseline) | 172.0 MB | 72.0% | 0.0% |
+| 4-bit (TMG-Q) | 44.1 MB | 72.0% | 0.0% |
+| 3-bit (TMG-Q) | 33.5 MB | 72.0% | 0.0% |
+| 2-bit (Naive INT) | 22.9 MB | 0.0% (Syntax Fail) | -100.0% |
+| 2-bit (TMG-Q) | 22.9 MB | 72.0% | 0.0% |
+
+---
+
+## 🚀 Quick Start / Reproduction
+
+We provide a streamlined CLI to reproduce our findings and test the methodology on HuggingFace model architectures natively.
+
+**Requirements:**
 ```bash
 pip install torch transformers numpy
 ```
 
-### Try TMG-Q Ultra on HuggingFace Models
-Download and run the generic HuggingFace compressor right from your terminal without cloning the full repo:
-
+### HuggingFace CLI Tool
 ```bash
+# Download the script
 curl -O https://raw.githubusercontent.com/abdallah2183/TMG-Q-Tanh-Mixed-Genetic-Quantization-Framework/main/TMG-Q/scripts/tmgq_ultra_hf.py
 
-# Test 3-bit compression on GPT-2 Medium (350M Parameters)
+# Evaluate GPT-2 Medium at 3-bit precision
 python tmgq_ultra_hf.py --model gpt2-medium --bits 3 --test
 
-# Test extreme 2-bit compression on GPT-2 Large (774M Parameters)
+# Evaluate GPT-2 Large at 2-bit precision
 python tmgq_ultra_hf.py --model gpt2-large --bits 2 --test
 ```
 
-## 📊 Rigorous Benchmarks & Evaluation
-
-We believe in absolute transparency. Unlike other frameworks that report "simulated" quantization metrics, **TMG-Q Ultra** evaluates actual output matrices using strict test-calibration splits to prevent data leakage. 
-
-### Benchmark 1: PPL Impact on HuggingFace Models (Zero-Shot)
-*Tested on `tmgq_ultra_hf.py` measuring exact Perplexity on a held-out test text set.*
-
-| Model | Params | FP16 Base Size | Target Bits | TMG-Q Ultra Size | Compression Ratio | Baseline PPL | TMG-Q Ultra PPL | Retention Status |
-|---|---|---|---|---|---|---|---|---|
-| **GPT-2 Medium** | 350M | 709.6 MB | **3-bit** | 133.1 MB | **5.3x** | 38.30 | **37.76** | 👑 **>100% (Noise Absorbed)** |
-| **GPT-2 Large** | 774M | 1548.1 MB | **2-bit** | 193.5 MB | **8.0x** | 39.83 | **35.57** | 👑 **>100% (Noise Absorbed)** |
-
-*Note: TMG-Q Ultra consistently achieved lower (better) or identical PPL at 2-bit and 3-bit. This occurs because the SVD+Hessian diffusion acts as a structural noise filter, neutralizing erratic floating-point activations while perfectly preserving core semantic bounds.*
-
-### Benchmark 2: Functional Logic & Code Generation (Pass@1)
-*Tested on a custom 85M autonomous coding nanoGPT model. Evaluated by executing generated Python AST logically.*
-**Methodology:** Calibrated on 50 tasks (`Seed=10`). Evaluated on 50 entirely unseen test tasks (`Seed=777`).
-
-| Strategy | Bits | Size | Pass@1 (Functional Success) | Degradation vs FP16 Baseline | 
-|---|---|---|---|---|
-| Original FP16 | 16-bit | 172.0 MB | 72.0% | 0.0% (Baseline) |
-| Naive INT4 | 4-bit | 44.1 MB | 72.0% | 0.0% |
-| **TMG-Q Ultra** | **4-bit** | 44.1 MB | **72.0%** | **0.0%** |
-| Naive INT3 | 3-bit | 33.5 MB | 72.0% | 0.0% |
-| **TMG-Q Ultra** | **3-bit** | 33.5 MB | **72.0%** | **0.0%** |
-| ❌ Naive INT2 | 2-bit | 22.9 MB | 0.0% (Failed Syntax completely) | -100.0% (Total Collapse) |
-| 👑 **TMG-Q Ultra** | **2-bit** | **22.9 MB** | **72.0%** | **0.0% (Perfect Logic Retention)** | 
-
-### 🔬 Methodology & Data Leakage Prevention 
-To ensure scientific integrity:
-- **No Overfitting:** The calibration matrices for calculating Hessian sensitivity are explicitly wiped before generating the final 2-bit logic. 
-- **Held-out Evaluations:** The prompt context used for Perplexity and Code Generation benchmarks shares `0%` overlap with the calibration distribution.
-- **Reproducibility:** You can reproduce the exact numbers above using the CLI tools provided in this repo.
+### nanoGPT Implementation
+For applying this to custom natively trained models, refer to `omegaquant_nanogpt.py` located in the root repository.
 
 ---
 
-## 📚 Custom Code Generation Implementation
+## 📅 Roadmap & Future Work
+- Validate PPL on standardized **WikiText-2** and **C4** datasets.
+- Compare memory allocation against **QuIP#**, **VPTQ**, and **AQLM**.
+- Benchmark zero-shot reasoning retention on **HumanEval** and **MBPP**.
 
-If you are following the **nanoGPT Autonomous Programming** project, you can compress your natively trained 85M models using our dedicated script:
-
-```bash
-curl -O https://raw.githubusercontent.com/abdallah2183/TMG-Q-Tanh-Mixed-Genetic-Quantization-Framework/main/omegaquant_nanogpt.py
-
-# Compress custom nanoGPT checkpoint to 3-bit:
-python omegaquant_nanogpt.py --in-ckpt out-self-code/ckpt.pt --out-ckpt out-self-code/ckpt_3bit.pt --bits 3
-```
-
----
-
-## 📜 Citation & License
-
-**Copyright (c) 2026 Abdullah Salem Saleh Al-Faqeer. All Rights Reserved.**
-
-If you use TMG-Q Ultra in your research, please link back to this repository. This software represents advanced, highly-optimized research in LLM post-training compression.
+## 📜 License
+Copyright (c) 2026 Abdullah Salem Saleh Al-Faqeer. All Rights Reserved.
