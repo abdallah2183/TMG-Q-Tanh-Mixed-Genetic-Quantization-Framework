@@ -55,13 +55,13 @@ def generate_text(prompt, max_new_tokens=200, temperature=0.8, top_k=200):
         y = model.generate(x, max_new_tokens, temperature=temperature, top_k=top_k)
     return decode(y[0].tolist())
 
-with gr.Blocks(theme=gr.themes.Base()) as demo:
+with gr.Blocks() as demo:
     gr.Markdown(f"# TMG-Q Ultra : Live {quant_bits}-bit Inference Demo")
     gr.Markdown("Interact directly with your fully autonomous NanoGPT model running locally.")
     
     with gr.Row():
         with gr.Column(scale=3):
-            chatbot = gr.Chatbot(height=500, type="messages")
+            chatbot = gr.Chatbot(height=500)
             msg = gr.Textbox(label="Enter Prompt (Python Context)")
         with gr.Column(scale=1):
             temp_slider = gr.Slider(0.1, 2.0, value=0.8, label="Temperature")
@@ -77,4 +77,4 @@ with gr.Blocks(theme=gr.themes.Base()) as demo:
     msg.submit(respond, [msg, chatbot, temp_slider, tokens_slider], [msg, chatbot])
 
 if __name__ == "__main__":
-    demo.launch(inbrowser=True)
+    demo.launch(inbrowser=True, theme=gr.themes.Base())
