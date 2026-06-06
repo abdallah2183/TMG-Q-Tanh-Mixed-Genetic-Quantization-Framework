@@ -15,5 +15,6 @@ venv/
 env/
 .env
 *.log
+sweep_results/
 .DS_Store
 Thumbs.db

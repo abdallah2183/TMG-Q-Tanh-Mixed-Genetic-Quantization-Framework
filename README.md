@@ -23,25 +23,32 @@
 - **Hessian-Guided Error Diffusion** - Uses second-order sensitivity information to redistribute quantization error across less-critical weights
 - **SVD Residual Recovery** - Recovers the most damaging structural deviations via truncated Singular Value Decomposition
 - **Export and Share** - Compress any HuggingFace model into a single portable `.pt` file
+- **GPT-2 Conv1D Support** - Uses the modern packed path for native GPT-2 projection layers
+- **Quantized Vocabulary Experiments** - Supports tied token embeddings, quantized lm_head, and low-rank vocabulary residuals
+- **Vocabulary Distillation** - Trains only a compact low-rank correction against the original teacher logits
+- **QAT-Lite Codebooks** - Optionally tunes selected packed 2/3-bit codebooks without changing their index payload
+- **Metadata Repacking Lab** - Tests FP8 or row-scaled INT8 storage for residual and quantization metadata
 - **Built-in Chat Interface** - Terminal-based chat for inference with compressed models
 
 ---
 
-## Preliminary Results
+## Verified Results
 
-> **Disclaimer**: The following results are from internal testing on limited evaluation subsets. They have NOT been independently reproduced or validated against standardized benchmark protocols. These numbers should be treated as indicative, not definitive.
+> **Disclaimer**: These are internal WikiText-2 measurements on limited subsets. They have not been independently reproduced and should not be compared directly with papers using different models, context lengths, or evaluation protocols.
 
 ### Perplexity (WikiText-2 Test Subset)
 
-Evaluated on WikiText-2 test split (256 context chunks of 1024 tokens).
+Evaluated on 32 chunks of 128 tokens. GPT-2 ratios cover the full checkpoint file. TinyLlama ratios compare the matched quantized matrix payload with its FP16 equivalent.
 
-| Model | Params | FP16 Size | Bits | Compressed | Ratio | FP16 PPL | TMG-Q PPL | Delta |
-|-------|--------|-----------|------|------------|-------|----------|-----------|-------|
-| GPT-2 Medium | 350M | 709 MB | 3-bit | 133 MB | 5.3x | 33.40 | 34.29 | +2.6% |
-| GPT-2 Large | 774M | 1548 MB | 2-bit | 193 MB | 8.0x | 29.43 | 29.66 | +0.8% |
-| TinyLlama 1.1B | 1.1B | 2200 MB | 4-bit | ~600 MB | 3.7x | -- | Coherent | -- |
+| Model and operating point | Baseline PPL | TMG-Q PPL | PPL increase | Compression |
+|---|---:|---:|---:|---:|
+| GPT-2 Base, quality: 4-bit + distilled rank 64 | 58.5241 | 58.7533 | 0.39% | 3.19x full file |
+| GPT-2 Base, compression: adaptive 3/4-bit + distilled rank 32 | 58.5241 | 61.2229 | 4.61% | 3.51x full file |
+| TinyLlama 1.1B, adaptive 2/3/4-bit + 0.1% residual | 17.7996 | 18.9206 | 6.30% | 3.51x matched matrices |
 
-The TinyLlama 4-bit export has been verified to produce coherent English text in interactive chat, but formal PPL measurement with the full Hessian+SVD pipeline on LLaMA architectures has not yet been completed.
+The detailed experiment history, rejected configurations, and reproduction commands are in [TMGQ_EXPERIMENT_REPORT.md](TMGQ_EXPERIMENT_REPORT.md).
+
+Older GPT-2 Medium/Large and NanoGPT numbers remain historical project observations but have not yet been reproduced with the modern packed exporter and current evaluation harness.
 
 ### Functional Logic (Pass@1) - NanoGPT Only
 
@@ -68,10 +75,10 @@ The following table shows **published results from other methods** for reference
 | QuIP# | 2-bit | LLaMA-7B | ~8.5 | Incoherence processing + lattice codebooks |
 | AQLM | 2-bit | LLaMA-7B | ~7.9 | Additive codebook quantization |
 | AWQ | 4-bit | LLaMA-7B | ~5.8 | Activation-aware weight quantization |
-| **TMG-Q** | **4-bit** | **TinyLlama-1.1B** | **TBD** | **Verified coherent generation only** |
-| **TMG-Q** | **3-bit** | **GPT-2 Medium** | **34.29** | **Preliminary, internal eval** |
+| **TMG-Q** | **adaptive 3/4-bit** | **GPT-2 Base** | **61.22** | **Internal 32 x 128-token eval; 3.51x full-file ratio** |
+| **TMG-Q** | **adaptive 2/3/4-bit** | **TinyLlama-1.1B** | **18.92** | **Internal 32 x 128-token eval** |
 
-> **Honest assessment**: TMG-Q has not yet been evaluated on the same models (LLaMA-7B/13B) or with the same standardized protocols used by GPTQ, QuIP#, AQLM, and AWQ. A direct apples-to-apples comparison is required before any claims of competitiveness can be made. This is the top priority in our roadmap.
+> **Honest assessment**: TMG-Q now has reproducible internal GPT-2 Base and TinyLlama measurements, but it has not been evaluated on the same models or standardized protocols used by GPTQ, QuIP#, AQLM, and AWQ. Direct comparisons are still required before claiming competitiveness.
 
 ---
 
@@ -80,7 +87,7 @@ The following table shows **published results from other methods** for reference
 ### Requirements
 
 ```bash
-pip install torch transformers numpy
+pip install torch transformers datasets numpy
 ```
 
 ### Compress and Export a HuggingFace Model
@@ -92,6 +99,85 @@ python tmgq_export_llama.py
 ```
 
 Output: `TinyLlama_4bit_TMGQ.pt` - a self-contained compressed model file.
+
+For a stronger calibrated export, use WikiText-2 activation statistics for Hessian-guided rounding:
+
+```bash
+python tmgq_export_llama.py \
+  --model TinyLlama/TinyLlama-1.1B-Chat-v1.0 \
+  --bits 4 \
+  --calibrate \
+  --calib-samples 64 \
+  --calib-length 256 \
+  --output TinyLlama_4bit_TMGQ_calibrated.pt
+```
+
+The exporter supports true physical `2-bit`, `3-bit`, and `4-bit` packing:
+
+```bash
+python tmgq_export_llama.py --bits 3 --output TinyLlama_3bit_TMGQ.pt
+```
+
+Use learned group codebooks for stronger sub-4-bit quality:
+
+```bash
+python tmgq_export_llama.py \
+  --model TinyLlama/TinyLlama-1.1B-Chat-v1.0 \
+  --bits 3 \
+  --group-size 32 \
+  --quantizer codebook \
+  --outlier-fraction 0.001 \
+  --calibrate \
+  --output TinyLlama_3bit_Codebook_TMGQ.pt
+```
+
+Use per-layer mixed precision:
+
+```bash
+# Boundary layers at 4-bit linear, middle layers at 3-bit codebook
+python tmgq_export_llama.py --mixed-policy balanced --group-size 128 --calibrate
+
+# Attention at 3-bit codebook, middle MLP layers at 2-bit codebook
+python tmgq_export_llama.py --mixed-policy aggressive --group-size 64 --calibrate
+```
+
+GPU adaptive export:
+
+```powershell
+python tmgq_export_llama.py --model TinyLlama/TinyLlama-1.1B-Chat-v1.0 --mixed-policy adaptive --group-size 64 --outlier-fraction 0.001 --calibrate --adaptive-probe-rows 64 --quant-device cuda
+```
+
+Global payload-budget optimization profiles 2/3/4-bit candidates and rejects mathematically impossible targets:
+
+```powershell
+python tmgq_export_llama.py --model TinyLlama/TinyLlama-1.1B-Chat-v1.0 --mixed-policy budget --target-ratio 4.0 --group-size 64 --calibrate --quant-device cuda
+```
+
+Sweeps can enforce a quality gate. The following marks checkpoints as rejected when PPL increases by more than 5%:
+
+```powershell
+python tmgq_sweep.py --model TinyLlama/TinyLlama-1.1B-Chat-v1.0 --configs "3:64:0.001:true:0:linear:budget" --target-ratio 4.0 --max-ppl-increase 5 --quant-device cuda
+```
+
+Distill a tied quantized GPT-2 vocabulary while keeping all packed transformer weights frozen:
+
+```powershell
+python tmgq_distill_vocab.py --model gpt2 --checkpoint sweep_results/gpt2_full_4bit_g64_cal.pt --output sweep_results/gpt2_vocab4_distilled_r128.pt --rank 128 --steps 250 --samples 64 --sequence-length 128 --initialize-svd
+```
+
+Experimental QAT-Lite for sub-4-bit codebooks:
+
+```powershell
+python tmgq_distill_vocab.py --model gpt2 --checkpoint packed.pt --output qat.pt --rank 32 --tune-quant-layers --tune-max-bits 3
+```
+
+Verified GPT-2 Base operating points on 32 WikiText-2 chunks:
+
+| Operating point | PPL | PPL increase | Full compression |
+|---|---:|---:|---:|
+| BF16 baseline | 58.5241 | -- | 1.00x |
+| Quality: 4-bit + distilled rank 64 | 58.7533 | 0.39% | 3.19x |
+| Compression: adaptive 3/4-bit + distilled rank 32 | 61.2229 | 4.61% | 3.51x |
 
 Customize the target model and precision by editing the function call at the bottom of the script:
 
@@ -130,6 +216,12 @@ python TMG-Q/scripts/tmgq_ultra_hf.py --model gpt2-medium --bits 3 --test
 
 # GPT-2 Large at 2-bit
 python TMG-Q/scripts/tmgq_ultra_hf.py --model gpt2-large --bits 2 --test
+```
+
+Evaluate a packed exported model against WikiText-2:
+
+```bash
+python tmgq_eval_ppl.py --model TinyLlama/TinyLlama-1.1B-Chat-v1.0 --checkpoint TinyLlama_4bit_TMGQ_calibrated.pt
 ```
 
 ### Compress Custom NanoGPT Models
@@ -197,7 +289,7 @@ At inference time, weights are unpacked on-the-fly and dequantized for matrix mu
 
 This project is in an early experimental stage. Known limitations include:
 
-1. **Limited benchmark coverage**: Results are only available for GPT-2 Medium/Large and a custom 85M nanoGPT model. No evaluation has been performed on LLaMA-7B/13B/70B or other standard benchmark models.
+1. **Limited benchmark coverage**: The modern exporter has verified internal measurements for GPT-2 Base and TinyLlama 1.1B, plus historical observations for GPT-2 Medium/Large and a custom 85M nanoGPT model. No evaluation has been performed on LLaMA-7B/13B/70B.
 
 2. **No standardized evaluation protocol**: PPL numbers were measured on internal evaluation subsets, not using the exact protocols from GPTQ/QuIP#/AQLM papers. Direct numerical comparison is therefore not valid.
 
