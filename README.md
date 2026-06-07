@@ -18,6 +18,12 @@
 
 ---
 
+## Research Paper
+
+The five-page technical paper includes the method, equations, experimental protocol, verified results, negative findings, figures, and academic references:
+
+**[Download the TMG-Q Research Paper (PDF)](paper/TMG-Q_Research_Paper_2026.pdf)**
+
 ## What TMG-Q Is
 
 TMG-Q is an experimental post-training quantization framework for Hugging Face causal language models. It stores quantized weights in physically packed `INT32` tensors and selects 2-bit, 3-bit, or 4-bit precision using calibration statistics and layer sensitivity.

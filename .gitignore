@@ -16,5 +16,8 @@ env/
 .env
 *.log
 sweep_results/
+paper/.render_deps/
+paper/assets/
+paper/rendered*/
 .DS_Store
 Thumbs.db
